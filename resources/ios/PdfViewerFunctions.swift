@@ -112,9 +112,17 @@ final class PdfViewerViewController: UIViewController {
     private func loadPdf() {
         guard let document = PDFDocument(url: fileURL) else { return }
         pdfView.document = document
-        // Reset zoom scale after document loads so minScaleFactor is correct
-        pdfView.minScaleFactor = pdfView.scaleFactorForSizeToFit
-        pdfView.scaleFactor = pdfView.scaleFactorForSizeToFit
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        // scaleFactorForSizeToFit is only valid once the view has a real size
+        let fitScale = pdfView.scaleFactorForSizeToFit
+        pdfView.minScaleFactor = fitScale
+        pdfView.maxScaleFactor = fitScale * 4.0
+        if pdfView.scaleFactor < fitScale {
+            pdfView.scaleFactor = fitScale
+        }
     }
 
     // MARK: - Actions
@@ -140,11 +148,23 @@ final class PdfViewerViewController: UIViewController {
 
 private extension UIApplication {
     func nativeTopViewController() -> UIViewController? {
-        guard
-            let windowScene = connectedScenes.first as? UIWindowScene,
-            let window = windowScene.windows.first(where: { $0.isKeyWindow }),
-            let root = window.rootViewController
-        else { return nil }
+        // Collect all windows across all scenes
+        var allWindows: [UIWindow] = []
+        for scene in connectedScenes {
+            guard let windowScene = scene as? UIWindowScene else { continue }
+            allWindows.append(contentsOf: windowScene.windows)
+        }
+        // Fallback: deprecated API still works when scenes returns nothing
+        if allWindows.isEmpty {
+            allWindows = windows
+        }
+
+        // Prefer the key window; accept any window with a root view controller
+        let window = allWindows.first(where: { $0.isKeyWindow })
+            ?? allWindows.first(where: { $0.rootViewController != nil })
+            ?? allWindows.first
+
+        guard let root = window?.rootViewController else { return nil }
         return topVC(from: root)
     }
 
