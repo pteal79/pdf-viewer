@@ -1,0 +1,46 @@
+{
+    "namespace": "PdfViewer",
+
+    "bridge_functions": [
+        {
+            "name": "PdfViewer.Open",
+            "android": "com.pteal.plugins.pdfviewer.PdfViewerFunctions.Open",
+            "ios": "PdfViewerFunctions.Open",
+            "description": "Open a PDF file in a popup viewer with pinch-to-zoom, close and share buttons"
+        }
+    ],
+
+    "android": {
+        "permissions": [],
+        "dependencies": {
+            "implementation": [
+                "com.github.barteksc:android-pdf-viewer:3.2.0-beta.1"
+            ]
+        },
+        "repositories": [
+            {"type": "maven", "url": "https://jitpack.io"}
+        ],
+        "activities": [
+            "com.pteal.plugins.pdfviewer.PdfViewerActivity"
+        ],
+        "services": [],
+        "receivers": [],
+        "providers": []
+    },
+
+    "ios": {
+        "info_plist": {},
+        "dependencies": {
+            "swift_packages": [],
+            "pods": []
+        }
+    },
+
+    "events": [
+        "Pteal\\PdfViewer\\Events\\PdfViewerClosed"
+    ],
+
+    "hooks": {
+        "copy_assets": "nativephp:pdf-viewer:copy-assets"
+    }
+}
