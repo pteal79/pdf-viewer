@@ -11,7 +11,7 @@ Opens PDF documents in a native popup viewer with **pinch-to-zoom**, a **close b
 # Add path repository to your Laravel app's composer.json
 # "repositories": [{"type": "path", "url": "./packages/pteal/plugin-pdf-viewer"}]
 
-composer require pteal/plugin-pdf-viewer
+composer require pteal79/pdf-viewer
 
 # Publish the plugins provider (first time only)
 php artisan vendor:publish --tag=nativephp-plugins-provider
