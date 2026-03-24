@@ -8,31 +8,30 @@ enum PdfViewerFunctions {
 
     class Open: BridgeFunction {
         func execute(parameters: [String: Any]) throws -> [String: Any] {
-            guard let source = parameters["filePath"] as? String, !source.isEmpty else {
-                throw BridgeError.invalidParameters("filePath is required")
+            let type = parameters["type"] as? String ?? "path"
+
+            guard let source = parameters["source"] as? String, !source.isEmpty else {
+                throw BridgeError.invalidParameters("source is required")
             }
 
-            let title = parameters["title"] as? String ?? "PDF Viewer"
-
-            // Support both remote URLs (http/https) and local file paths
-            let isRemote = source.lowercased().hasPrefix("http://")
-                || source.lowercased().hasPrefix("https://")
+            let title = parameters["title"] as? String ?? ""
+            let description = parameters["description"] as? String ?? ""
 
             let url: URL
-            if isRemote {
+            if type == "url" {
                 guard let remoteURL = URL(string: source) else {
                     throw BridgeError.invalidParameters("Invalid URL: \(source)")
                 }
                 url = remoteURL
             } else {
-                url = URL(fileURLWithPath: source)
                 guard FileManager.default.fileExists(atPath: source) else {
                     throw BridgeError.executionFailed("File not found: \(source)")
                 }
+                url = URL(fileURLWithPath: source)
             }
 
             DispatchQueue.main.async {
-                PdfViewerPresenter.present(url: url, title: title)
+                PdfViewerPresenter.present(url: url, source: source, title: title, description: description)
             }
 
             return ["opened": true]
@@ -40,59 +39,33 @@ enum PdfViewerFunctions {
     }
 }
 
-// MARK: - Window-based Presenter
-//
-// We create a dedicated UIWindow at .alert level rather than calling
-// present() on the UIHostingController. This is the reliable pattern
-// for NativePHP plugins because SwiftUI manages its own UIHostingController
-// presentation stack and imperative `present` calls on it can be silently ignored.
-
-private final class PdfViewerWindowHolder {
-    static let shared = PdfViewerWindowHolder()
-    var window: UIWindow?
-}
+// MARK: - Presenter
 
 enum PdfViewerPresenter {
 
-    static func present(url: URL, title: String) {
-        // Find the active foreground scene; fall back to the first available one
-        let scene = UIApplication.shared.connectedScenes
+    static func present(url: URL, source: String, title: String, description: String) {
+        let keyWindow = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
-            .first(where: { $0.activationState == .foregroundActive })
+            .first(where: { $0.activationState == .foregroundActive })?
+            .windows
+            .first(where: { $0.isKeyWindow })
             ?? UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
+            .first?
+            .windows
             .first
 
-        guard let windowScene = scene else { return }
+        guard let rootVC = keyWindow?.rootViewController else { return }
 
-        let pdfVC = PdfViewerViewController(pdfURL: url, pdfTitle: title)
+        var topVC = rootVC
+        while let presented = topVC.presentedViewController {
+            topVC = presented
+        }
+
+        let pdfVC = PdfViewerViewController(pdfURL: url, source: source, title: title, description: description)
         let nav = UINavigationController(rootViewController: pdfVC)
-
-        let overlayWindow = UIWindow(windowScene: windowScene)
-        overlayWindow.rootViewController = nav
-        overlayWindow.windowLevel = .alert + 1
-        overlayWindow.alpha = 0
-        overlayWindow.makeKeyAndVisible()
-
-        // Keep a strong reference — the window is dismissed by releasing it
-        PdfViewerWindowHolder.shared.window = overlayWindow
-
-        pdfVC.onDismiss = {
-            UIView.animate(withDuration: 0.25, animations: {
-                overlayWindow.alpha = 0
-            }, completion: { _ in
-                overlayWindow.isHidden = true
-                PdfViewerWindowHolder.shared.window = nil
-            })
-        }
-
-        // Slide-up entrance animation
-        let screenHeight = windowScene.screen.bounds.height
-        nav.view.transform = CGAffineTransform(translationX: 0, y: screenHeight)
-        UIView.animate(withDuration: 0.35, delay: 0, options: .curveEaseOut) {
-            overlayWindow.alpha = 1
-            nav.view.transform = .identity
-        }
+        nav.modalPresentationStyle = .fullScreen
+        topVC.present(nav, animated: true)
     }
 }
 
@@ -100,16 +73,19 @@ enum PdfViewerPresenter {
 
 final class PdfViewerViewController: UIViewController {
 
-    var onDismiss: (() -> Void)?
-
     private let pdfURL: URL
+    private let source: String
     private let pdfTitle: String
+    private let pdfDescription: String
     private var pdfView: PDFView!
     private var activityIndicator: UIActivityIndicatorView!
+    private var downloadedFileURL: URL?
 
-    init(pdfURL: URL, pdfTitle: String) {
+    init(pdfURL: URL, source: String, title: String, description: String) {
         self.pdfURL = pdfURL
-        self.pdfTitle = pdfTitle
+        self.source = source
+        self.pdfTitle = title
+        self.pdfDescription = description
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -119,7 +95,6 @@ final class PdfViewerViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        title = pdfTitle
         view.backgroundColor = .systemBackground
         setupNavigationBar()
         setupPdfView()
@@ -131,17 +106,24 @@ final class PdfViewerViewController: UIViewController {
 
     private func setupNavigationBar() {
         navigationItem.leftBarButtonItem = UIBarButtonItem(
-            image: UIImage(systemName: "xmark"),
-            style: .plain,
-            target: self,
-            action: #selector(closeTapped)
-        )
-        navigationItem.rightBarButtonItem = UIBarButtonItem(
             image: UIImage(systemName: "square.and.arrow.up"),
             style: .plain,
             target: self,
             action: #selector(shareTapped)
         )
+
+        navigationItem.rightBarButtonItem = UIBarButtonItem(
+            image: UIImage(systemName: "xmark"),
+            style: .plain,
+            target: self,
+            action: #selector(closeTapped)
+        )
+
+        if !pdfTitle.isEmpty && !pdfDescription.isEmpty {
+            navigationItem.titleView = makeTitleView(title: pdfTitle, subtitle: pdfDescription)
+        } else {
+            navigationItem.title = pdfTitle.isEmpty ? nil : pdfTitle
+        }
 
         let appearance = UINavigationBarAppearance()
         appearance.configureWithOpaqueBackground()
@@ -150,6 +132,27 @@ final class PdfViewerViewController: UIViewController {
         navigationController?.navigationBar.standardAppearance = appearance
         navigationController?.navigationBar.scrollEdgeAppearance = appearance
         navigationController?.navigationBar.tintColor = .white
+    }
+
+    private func makeTitleView(title: String, subtitle: String) -> UIView {
+        let titleLabel = UILabel()
+        titleLabel.text = title
+        titleLabel.font = .systemFont(ofSize: 17, weight: .semibold)
+        titleLabel.textColor = .white
+        titleLabel.textAlignment = .center
+
+        let subtitleLabel = UILabel()
+        subtitleLabel.text = subtitle
+        subtitleLabel.font = .systemFont(ofSize: 12, weight: .regular)
+        subtitleLabel.textColor = UIColor.white.withAlphaComponent(0.7)
+        subtitleLabel.textAlignment = .center
+
+        let stack = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel])
+        stack.axis = .vertical
+        stack.alignment = .center
+        stack.spacing = 1
+        stack.sizeToFit()
+        return stack
     }
 
     private func setupPdfView() {
@@ -184,20 +187,23 @@ final class PdfViewerViewController: UIViewController {
 
     private func loadPdf() {
         if pdfURL.isFileURL {
-            // Local file — load immediately
-            if let document = PDFDocument(url: pdfURL) {
-                pdfView.document = document
-            }
+            downloadedFileURL = pdfURL
+            pdfView.document = PDFDocument(url: pdfURL)
         } else {
-            // Remote URL — download on a background thread
             activityIndicator.startAnimating()
             URLSession.shared.dataTask(with: pdfURL) { [weak self] data, _, error in
-                guard let self else { return }
+                guard let self, let data, error == nil else {
+                    DispatchQueue.main.async { self?.activityIndicator.stopAnimating() }
+                    return
+                }
+                // Write to a temp file so we can share the actual PDF
+                let filename = self.pdfURL.lastPathComponent.isEmpty ? "document.pdf" : self.pdfURL.lastPathComponent
+                let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+                try? data.write(to: tempURL)
                 DispatchQueue.main.async {
                     self.activityIndicator.stopAnimating()
-                    if let data, error == nil {
-                        self.pdfView.document = PDFDocument(data: data)
-                    }
+                    self.downloadedFileURL = tempURL
+                    self.pdfView.document = PDFDocument(data: data)
                 }
             }.resume()
         }
@@ -218,16 +224,18 @@ final class PdfViewerViewController: UIViewController {
     // MARK: - Actions
 
     @objc private func closeTapped() {
-        onDismiss?()
+        LaravelBridge.shared.send?(
+            "Pteal\\PdfViewer\\Events\\PdfViewerClosed",
+            ["filePath": source]
+        )
+        dismiss(animated: true)
     }
 
     @objc private func shareTapped() {
-        let activityVC = UIActivityViewController(
-            activityItems: [pdfURL],
-            applicationActivities: nil
-        )
+        let item: Any = downloadedFileURL ?? pdfURL
+        let activityVC = UIActivityViewController(activityItems: [item], applicationActivities: nil)
         if let popover = activityVC.popoverPresentationController {
-            popover.barButtonItem = navigationItem.rightBarButtonItem
+            popover.barButtonItem = navigationItem.leftBarButtonItem
         }
         present(activityVC, animated: true)
     }

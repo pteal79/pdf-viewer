@@ -4,21 +4,24 @@ namespace Pteal\PdfViewer;
 
 class PdfViewer
 {
-    /**
-     * Open a PDF file in a native popup viewer.
-     *
-     * The viewer supports pinch-to-zoom, has a close button and a native
-     * share button built into the toolbar.
-     *
-     * @param  string  $filePath  Absolute path to the PDF file on the device
-     * @param  string  $title     Optional title shown in the viewer toolbar
-     */
-    public function open(string $filePath, string $title = 'PDF Viewer'): mixed
+    public function url(string $url, string $title = '', string $description = ''): mixed
+    {
+        return $this->call('url', $url, $title, $description);
+    }
+
+    public function path(string $path, string $title = '', string $description = ''): mixed
+    {
+        return $this->call('path', $path, $title, $description);
+    }
+
+    private function call(string $type, string $source, string $title = '', string $description = ''): mixed
     {
         if (function_exists('nativephp_call')) {
             $result = nativephp_call('PdfViewer.Open', json_encode([
-                'filePath' => $filePath,
+                'type' => $type,
+                'source' => $source,
                 'title' => $title,
+                'description' => $description,
             ]));
 
             if ($result) {
