@@ -23,7 +23,7 @@
             {"type": "maven", "url": "https://jitpack.io"}
         ],
         "activities": [
-            "com.pteal.plugins.pdfviewer.PdfViewerActivity"
+            {"name": "com.pteal.plugins.pdfviewer.PdfViewerActivity"}
         ],
         "services": [],
         "receivers": [],
