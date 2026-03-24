@@ -2,31 +2,96 @@ import Foundation
 import PDFKit
 import UIKit
 
+// MARK: - Bridge Functions
+
 enum PdfViewerFunctions {
 
     class Open: BridgeFunction {
         func execute(parameters: [String: Any]) throws -> [String: Any] {
-            guard let filePath = parameters["filePath"] as? String else {
-                return BridgeResponse.error(message: "filePath parameter is required")
+            guard let source = parameters["filePath"] as? String, !source.isEmpty else {
+                throw BridgeError.invalidParameters("filePath is required")
             }
 
             let title = parameters["title"] as? String ?? "PDF Viewer"
-            let fileURL = URL(fileURLWithPath: filePath)
 
-            guard FileManager.default.fileExists(atPath: filePath) else {
-                return BridgeResponse.error(message: "File not found: \(filePath)")
+            // Support both remote URLs (http/https) and local file paths
+            let isRemote = source.lowercased().hasPrefix("http://")
+                || source.lowercased().hasPrefix("https://")
+
+            let url: URL
+            if isRemote {
+                guard let remoteURL = URL(string: source) else {
+                    throw BridgeError.invalidParameters("Invalid URL: \(source)")
+                }
+                url = remoteURL
+            } else {
+                url = URL(fileURLWithPath: source)
+                guard FileManager.default.fileExists(atPath: source) else {
+                    throw BridgeError.executionFailed("File not found: \(source)")
+                }
             }
 
             DispatchQueue.main.async {
-                guard let topVC = UIApplication.shared.nativeTopViewController() else { return }
-
-                let pdfVC = PdfViewerViewController(fileURL: fileURL, pdfTitle: title)
-                let navController = UINavigationController(rootViewController: pdfVC)
-                navController.modalPresentationStyle = .fullScreen
-                topVC.present(navController, animated: true)
+                PdfViewerPresenter.present(url: url, title: title)
             }
 
-            return BridgeResponse.success(data: ["opened": true])
+            return ["opened": true]
+        }
+    }
+}
+
+// MARK: - Window-based Presenter
+//
+// We create a dedicated UIWindow at .alert level rather than calling
+// present() on the UIHostingController. This is the reliable pattern
+// for NativePHP plugins because SwiftUI manages its own UIHostingController
+// presentation stack and imperative `present` calls on it can be silently ignored.
+
+private final class PdfViewerWindowHolder {
+    static let shared = PdfViewerWindowHolder()
+    var window: UIWindow?
+}
+
+enum PdfViewerPresenter {
+
+    static func present(url: URL, title: String) {
+        // Find the active foreground scene; fall back to the first available one
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first(where: { $0.activationState == .foregroundActive })
+            ?? UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first
+
+        guard let windowScene = scene else { return }
+
+        let pdfVC = PdfViewerViewController(pdfURL: url, pdfTitle: title)
+        let nav = UINavigationController(rootViewController: pdfVC)
+
+        let overlayWindow = UIWindow(windowScene: windowScene)
+        overlayWindow.rootViewController = nav
+        overlayWindow.windowLevel = .alert + 1
+        overlayWindow.alpha = 0
+        overlayWindow.makeKeyAndVisible()
+
+        // Keep a strong reference — the window is dismissed by releasing it
+        PdfViewerWindowHolder.shared.window = overlayWindow
+
+        pdfVC.onDismiss = {
+            UIView.animate(withDuration: 0.25, animations: {
+                overlayWindow.alpha = 0
+            }, completion: { _ in
+                overlayWindow.isHidden = true
+                PdfViewerWindowHolder.shared.window = nil
+            })
+        }
+
+        // Slide-up entrance animation
+        let screenHeight = windowScene.screen.bounds.height
+        nav.view.transform = CGAffineTransform(translationX: 0, y: screenHeight)
+        UIView.animate(withDuration: 0.35, delay: 0, options: .curveEaseOut) {
+            overlayWindow.alpha = 1
+            nav.view.transform = .identity
         }
     }
 }
@@ -35,12 +100,15 @@ enum PdfViewerFunctions {
 
 final class PdfViewerViewController: UIViewController {
 
-    private let fileURL: URL
+    var onDismiss: (() -> Void)?
+
+    private let pdfURL: URL
     private let pdfTitle: String
     private var pdfView: PDFView!
+    private var activityIndicator: UIActivityIndicatorView!
 
-    init(fileURL: URL, pdfTitle: String) {
-        self.fileURL = fileURL
+    init(pdfURL: URL, pdfTitle: String) {
+        self.pdfURL = pdfURL
         self.pdfTitle = pdfTitle
         super.init(nibName: nil, bundle: nil)
     }
@@ -55,21 +123,19 @@ final class PdfViewerViewController: UIViewController {
         view.backgroundColor = .systemBackground
         setupNavigationBar()
         setupPdfView()
+        setupActivityIndicator()
         loadPdf()
     }
 
     // MARK: - Setup
 
     private func setupNavigationBar() {
-        // Close button — left side
         navigationItem.leftBarButtonItem = UIBarButtonItem(
             image: UIImage(systemName: "xmark"),
             style: .plain,
             target: self,
             action: #selector(closeTapped)
         )
-
-        // Share button — right side
         navigationItem.rightBarButtonItem = UIBarButtonItem(
             image: UIImage(systemName: "square.and.arrow.up"),
             style: .plain,
@@ -89,16 +155,9 @@ final class PdfViewerViewController: UIViewController {
     private func setupPdfView() {
         pdfView = PDFView()
         pdfView.translatesAutoresizingMaskIntoConstraints = false
-
-        // Continuous vertical scroll with built-in pinch-to-zoom
         pdfView.autoScales = true
         pdfView.displayMode = .singlePageContinuous
         pdfView.displayDirection = .vertical
-
-        // Allow zooming up to 4× the fit-to-page scale
-        pdfView.minScaleFactor = pdfView.scaleFactorForSizeToFit
-        pdfView.maxScaleFactor = 4.0
-
         view.addSubview(pdfView)
 
         NSLayoutConstraint.activate([
@@ -109,15 +168,46 @@ final class PdfViewerViewController: UIViewController {
         ])
     }
 
+    private func setupActivityIndicator() {
+        activityIndicator = UIActivityIndicatorView(style: .large)
+        activityIndicator.translatesAutoresizingMaskIntoConstraints = false
+        activityIndicator.hidesWhenStopped = true
+        view.addSubview(activityIndicator)
+
+        NSLayoutConstraint.activate([
+            activityIndicator.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            activityIndicator.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+        ])
+    }
+
+    // MARK: - Loading
+
     private func loadPdf() {
-        guard let document = PDFDocument(url: fileURL) else { return }
-        pdfView.document = document
+        if pdfURL.isFileURL {
+            // Local file — load immediately
+            if let document = PDFDocument(url: pdfURL) {
+                pdfView.document = document
+            }
+        } else {
+            // Remote URL — download on a background thread
+            activityIndicator.startAnimating()
+            URLSession.shared.dataTask(with: pdfURL) { [weak self] data, _, error in
+                guard let self else { return }
+                DispatchQueue.main.async {
+                    self.activityIndicator.stopAnimating()
+                    if let data, error == nil {
+                        self.pdfView.document = PDFDocument(data: data)
+                    }
+                }
+            }.resume()
+        }
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        // scaleFactorForSizeToFit is only valid once the view has a real size
+        guard pdfView.document != nil else { return }
         let fitScale = pdfView.scaleFactorForSizeToFit
+        guard fitScale > 0 else { return }
         pdfView.minScaleFactor = fitScale
         pdfView.maxScaleFactor = fitScale * 4.0
         if pdfView.scaleFactor < fitScale {
@@ -128,56 +218,17 @@ final class PdfViewerViewController: UIViewController {
     // MARK: - Actions
 
     @objc private func closeTapped() {
-        dismiss(animated: true)
+        onDismiss?()
     }
 
     @objc private func shareTapped() {
         let activityVC = UIActivityViewController(
-            activityItems: [fileURL],
+            activityItems: [pdfURL],
             applicationActivities: nil
         )
-        // iPad popover anchor
         if let popover = activityVC.popoverPresentationController {
             popover.barButtonItem = navigationItem.rightBarButtonItem
         }
         present(activityVC, animated: true)
-    }
-}
-
-// MARK: - UIApplication helper
-
-private extension UIApplication {
-    func nativeTopViewController() -> UIViewController? {
-        // Collect all windows across all scenes
-        var allWindows: [UIWindow] = []
-        for scene in connectedScenes {
-            guard let windowScene = scene as? UIWindowScene else { continue }
-            allWindows.append(contentsOf: windowScene.windows)
-        }
-        // Fallback: deprecated API still works when scenes returns nothing
-        if allWindows.isEmpty {
-            allWindows = windows
-        }
-
-        // Prefer the key window; accept any window with a root view controller
-        let window = allWindows.first(where: { $0.isKeyWindow })
-            ?? allWindows.first(where: { $0.rootViewController != nil })
-            ?? allWindows.first
-
-        guard let root = window?.rootViewController else { return nil }
-        return topVC(from: root)
-    }
-
-    private func topVC(from vc: UIViewController) -> UIViewController {
-        if let presented = vc.presentedViewController {
-            return topVC(from: presented)
-        }
-        if let nav = vc as? UINavigationController, let visible = nav.visibleViewController {
-            return topVC(from: visible)
-        }
-        if let tab = vc as? UITabBarController, let selected = tab.selectedViewController {
-            return topVC(from: selected)
-        }
-        return vc
     }
 }
