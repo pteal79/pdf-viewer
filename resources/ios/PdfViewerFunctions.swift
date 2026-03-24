@@ -197,7 +197,8 @@ final class PdfViewerViewController: UIViewController {
                     return
                 }
                 // Write to a temp file so we can share the actual PDF
-                let filename = self.pdfURL.lastPathComponent.isEmpty ? "document.pdf" : self.pdfURL.lastPathComponent
+                let rawName = self.pdfURL.lastPathComponent.isEmpty ? "document" : self.pdfURL.lastPathComponent
+                let filename = rawName.lowercased().hasSuffix(".pdf") ? rawName : rawName + ".pdf"
                 let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
                 try? data.write(to: tempURL)
                 DispatchQueue.main.async {

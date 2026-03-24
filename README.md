@@ -3,7 +3,7 @@
 Opens PDF documents in a full-screen native viewer with **pinch-to-zoom**, a **share button** (left), and a **close button** (right). Supports both remote URLs and local file paths. Works on iOS and Android.
 
 - **iOS** — uses `PDFKit` (built-in, no external dependencies, iOS 11+)
-- **Android** — uses `barteksc/android-pdf-viewer` via JitPack (API 21+)
+- **Android** — uses the built-in `PdfRenderer` (no external dependencies, API 21+)
 
 ## Installation
 
@@ -21,8 +21,8 @@ php artisan native:plugin:list
 
 ### Android
 - Minimum API 21 (Android 5.0)
-- JitPack repository must be available in the project's Gradle config
-- For the share button: a `FileProvider` with authority `${applicationId}.provider` must be declared in `AndroidManifest.xml` (see [Android FileProvider Setup](#android-fileprovider-setup))
+- No external dependencies or Gradle repository changes required
+- **Optional:** declare a `FileProvider` with authority `${applicationId}.provider` for the best share experience (see [Android FileProvider Setup](#android-fileprovider-setup)). Without it, the plugin falls back to sharing via `MediaStore.Downloads` (API 29+)
 
 ### iOS
 - iOS 11+, Xcode 13+
@@ -92,7 +92,9 @@ public function onPdfClosed(string $filePath): void
 
 ## Android FileProvider Setup
 
-The share button requires a `FileProvider` to be declared in your app's `AndroidManifest.xml`. Add the following inside `<application>`:
+Adding a `FileProvider` gives the best share experience on all Android versions. Without it, the plugin falls back to `MediaStore.Downloads` (API 29+) — sharing will silently fail on API 21–28 without FileProvider.
+
+Add the following inside `<application>` in your `AndroidManifest.xml`:
 
 ```xml
 <provider
@@ -112,7 +114,6 @@ Create `res/xml/file_paths.xml`:
 <?xml version="1.0" encoding="utf-8"?>
 <paths>
     <files-path name="files" path="." />
-    <cache-path name="cache" path="." />
     <external-files-path name="external_files" path="." />
 </paths>
 ```
